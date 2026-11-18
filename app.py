@@ -1,12 +1,185 @@
 import os
 import json
+import math
 import subprocess
 import streamlit as st
 import yt_dlp
+from yt_dlp.utils import download_range_func
 from groq import Groq
 
-st.set_page_config(page_title="AI Viral Clipper & Scorer", layout="wide")
+st.set_page_config(page_title="VIRAL//AI CLIPPER — Auto-Clipper Pro", layout="wide")
 client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+
+# --- STILE IDENTICO A VIRAL//STREAM FINDER ---
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&display=swap');
+
+/* Sfondo nero assoluto e font monospace */
+html, body, [class*="css"], .stApp {
+    background-color: #090b0e !important;
+    color: #e6edf3 !important;
+    font-family: 'JetBrains Mono', monospace !important;
+}
+
+/* Nasconde header e footer standard di Streamlit */
+header[data-testid="stHeader"], footer, #MainMenu {
+    visibility: hidden !important;
+    height: 0px !important;
+}
+.block-container {
+    padding-top: 1.2rem !important;
+    max-width: 1280px !important;
+}
+
+/* Top Bar identica al Finder */
+.finder-topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: #0d1015;
+    border: 1px solid #1f2630;
+    border-radius: 6px;
+    padding: 12px 18px;
+    margin-bottom: 18px;
+}
+.finder-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-weight: 800;
+    font-size: 16px;
+    letter-spacing: 0.5px;
+    color: #ffffff;
+}
+.dot-red {
+    height: 9px;
+    width: 9px;
+    background-color: #ff4b4b;
+    border-radius: 50%;
+    display: inline-block;
+    box-shadow: 0 0 8px #ff4b4b;
+}
+.badge-green {
+    background-color: rgba(0, 230, 118, 0.14);
+    color: #00e676;
+    border: 1px solid #00e676;
+    padding: 3px 9px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+}
+.badge-muted {
+    color: #7d8590;
+    font-size: 12px;
+}
+
+/* Input boxes e Selectbox scuri */
+.stTextInput > div > div > input, .stSelectbox > div > div {
+    background-color: #11151c !important;
+    color: #e6edf3 !important;
+    border: 1px solid #262e3a !important;
+    border-radius: 6px !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    font-size: 13px !important;
+}
+.stTextInput > div > div > input:focus {
+    border-color: #00e676 !important;
+    box-shadow: 0 0 0 1px #00e676 !important;
+}
+label {
+    color: #8b949e !important;
+    font-size: 12px !important;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Pulsante principale Verde Neon */
+.stButton > button[kind="primary"] {
+    background-color: #00e676 !important;
+    color: #050709 !important;
+    border: none !important;
+    border-radius: 6px !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    font-weight: 800 !important;
+    font-size: 13px !important;
+    padding: 0.6rem 1.2rem !important;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    transition: all 0.15s ease;
+    width: 100%;
+}
+.stButton > button[kind="primary"]:hover {
+    background-color: #00c865 !important;
+    box-shadow: 0 0 14px rgba(0, 230, 118, 0.45);
+}
+
+/* Pulsante Download secondario scuro */
+.stDownloadButton > button {
+    background-color: #131820 !important;
+    color: #00e676 !important;
+    border: 1px solid #00e676 !important;
+    border-radius: 6px !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    font-weight: 700 !important;
+    width: 100%;
+}
+.stDownloadButton > button:hover {
+    background-color: rgba(0, 230, 118, 0.12) !important;
+}
+
+/* Card delle clip in stile Finder */
+.clip-card {
+    background-color: #0e1218;
+    border: 1px solid #1e2530;
+    border-radius: 8px;
+    padding: 18px;
+    margin-bottom: 14px;
+}
+.clip-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+.score-ring {
+    border: 2px solid #00e676;
+    color: #00e676;
+    background: rgba(0, 230, 118, 0.08);
+    border-radius: 50%;
+    width: 46px;
+    height: 46px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    font-size: 16px;
+}
+.tag-pill {
+    display: inline-block;
+    background: #161b22;
+    border: 1px solid #2b333e;
+    color: #58a6ff;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    margin-right: 6px;
+}
+</style>
+
+<div class="finder-topbar">
+    <div class="finder-brand">
+        <span class="dot-red"></span>
+        <span>VIRAL//AI CLIPPER</span>
+        <span class="badge-green">ENGINE: WHISPER + LLAMA-3</span>
+        <span class="badge-muted">9:16 AUTO-CROP · SUBTITLES ON</span>
+    </div>
+    <div>
+        <span class="badge-green">AUTO-CLIPPER PRO</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 def format_srt_time(seconds):
     hrs = int(seconds // 3600)
@@ -15,77 +188,191 @@ def format_srt_time(seconds):
     millis = int((seconds - int(seconds)) * 1000)
     return f"{hrs:02d}:{mins:02d}:{secs:02d},{millis:03d}"
 
-st.title("AI Viral Clipper & Scorer (Pro)")
-st.write("Incolla il link di una clip o video YouTube/Twitch per estrarre il momento più virale in 9:16 con sottotitoli.")
+def format_clock(seconds):
+    hrs = int(seconds // 3600)
+    mins = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
-url = st.text_input("Link Video / Clip (YouTube o Twitch)", placeholder="https://www.youtube.com/watch?v=...")
+# Pannello di controllo superiore
+col_in1, col_in2, col_btn = st.columns([4, 1, 1.5])
+with col_in1:
+    url = st.text_input("TARGET VOD / CLIP URL (TWITCH O YOUTUBE)", placeholder="https://www.twitch.tv/videos/... oppure https://www.youtube.com/watch?v=...")
+with col_in2:
+    num_clips = st.selectbox("CLIPS OUTPUT", [3, 5], index=1)
+with col_btn:
+    st.markdown("<div style='height: 27px;'></div>", unsafe_allow_html=True)
+    run_clicked = st.button("⚡ EXTRACT CLIPS", type="primary")
 
-if st.button("Genera Clip Virale", type="primary") and url:
-    with st.spinner("Scaricamento, trascrizione AI e rendering 9:16 in corso..."):
-        video_path, audio_path, srt_path, output_clip = "input.mp4", "audio.mp3", "subs.srt", "viral_clip_9_16.mp4"
-        for f in [video_path, audio_path, srt_path, output_clip]:
-            if os.path.exists(f):
-                os.remove(f)
+if run_clicked and url:
+    clean_url = url.strip()
 
-        ydl_opts = {
-            "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "outtmpl": video_path,
+    with st.spinner("[1/3] SCANNING STREAM METADATA & EXTRACTING AUDIO TRACK..."):
+        try:
+            with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+                info = ydl.extract_info(clean_url, download=False)
+                if info.get("is_live"):
+                    st.error("⚠️ LIVE STREAM IN CORSO RILEVATA: inserisci il link del VOD registrato appena terminata la live o una clip esistente.")
+                    st.stop()
+                video_title = info.get("title", "Stream VOD")
+        except Exception as e:
+            st.error(f"ERRORE ACCESSO VOD: verifica che il link sia pubblico e valido. ({e})")
+            st.stop()
+
+        full_audio = "full_stream_audio.m4a"
+        if os.path.exists(full_audio):
+            os.remove(full_audio)
+
+        audio_opts = {
+            "format": "bestaudio[ext=m4a]/bestaudio/best",
+            "outtmpl": full_audio,
             "quiet": True,
         }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url.strip()])
+        with yt_dlp.YoutubeDL(audio_opts) as ydl:
+            ydl.download([clean_url])
 
-        subprocess.run(["ffmpeg", "-y", "-i", video_path, "-vn", "-ar", "16000", "-ac", "1", "-b:a", "64k", audio_path], check=True)
+    with st.spinner("[2/3] RUNNING AI VIRAL MOMENT DETECTION ACROSS FULL VOD..."):
+        chunk_dir = "audio_chunks"
+        os.makedirs(chunk_dir, exist_ok=True)
+        for old_f in os.listdir(chunk_dir):
+            os.remove(os.path.join(chunk_dir, old_f))
 
-        with open(audio_path, "rb") as file:
-            transcription = client.audio.transcriptions.create(
-                file=(audio_path, file.read()),
-                model="whisper-large-v3-turbo",
-                response_format="verbose_json",
-            )
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", full_audio, "-vn", "-ar", "16000", "-ac", "1", "-b:a", "32k", "-f", "segment", "-segment_time", "1200", f"{chunk_dir}/chunk_%03d.mp3"],
+            check=True,
+        )
 
-        segments = [{"start": round(s["start"], 2), "end": round(s["end"], 2), "text": s["text"].strip()} for s in (transcription.segments or [])]
+        chunk_files = sorted(os.listdir(chunk_dir))
+        all_segments = []
+        for idx_c, c_file in enumerate(chunk_files):
+            offset = idx_c * 1200.0
+            c_path = os.path.join(chunk_dir, c_file)
+            with open(c_path, "rb") as f:
+                trans = client.audio.transcriptions.create(
+                    file=(c_file, f.read()),
+                    model="whisper-large-v3-turbo",
+                    response_format="verbose_json",
+                )
+            for s in (trans.segments or []):
+                all_segments.append({
+                    "start": round(s["start"] + offset, 2),
+                    "end": round(s["end"] + offset, 2),
+                    "text": s["text"].strip()
+                })
+
+        if not all_segments:
+            st.error("NESSUN PARLATO RILEVATO NELLO STREAM.")
+            st.stop()
+
+        condensed = [{"s": round(x["start"], 1), "e": round(x["end"], 1), "t": x["text"]} for x in all_segments]
+        condensed_for_ai = condensed[::math.ceil(len(condensed) / 650)] if len(condensed) > 650 else condensed
 
         prompt = f"""
-        You are an expert TikTok/Reels/Shorts viral clipper. Pick the single highest-retention 20 to 45 second clip.
-        Return ONLY valid JSON with keys: "start" (number), "end" (number), "virality_score" (integer 72-99), "hook_title" (string), "reason" (Italian explanation).
-        Segments: {json.dumps(segments[:150])}
+        You are an elite viral content strategist for TikTok, Reels, and YouTube Shorts.
+        Analyze this full stream transcript ("{video_title}") and find the TOP {num_clips} most viral, funny, emotional, or high-retention moments across the ENTIRE stream.
+        Each clip MUST be between 20 and 50 seconds long and must NOT overlap with the others.
+        Return ONLY a valid JSON object with a single key "clips" containing a list of {num_clips} objects, each with:
+        - "start": number (exact start second from the transcript)
+        - "end": number (exact end second, 20 to 50 seconds after start)
+        - "virality_score": integer between 78 and 99
+        - "hook_title": catchy viral hook title
+        - "reason": brief explanation in Italian of why this moment will go viral
+        Transcript: {json.dumps(condensed_for_ai)}
         """
+
         chat = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
         )
-        result = json.loads(chat.choices[0].message.content)
+        ai_data = json.loads(chat.choices[0].message.content)
+        clips_list = ai_data.get("clips", [])[:num_clips]
 
-        start = float(result.get("start", 0))
-        end = float(result.get("end", start + 30))
-        duration = max(12.0, min(60.0, end - start))
-        clip_end = start + duration
+    st.markdown(f"<div class='badge-green' style='margin-bottom:15px;'>✓ RILEVATI {len(clips_list)} MOMENTI VIRALI SU: {video_title[:70]}</div>", unsafe_allow_html=True)
+    progress_bar = st.progress(0)
+
+    for i, clip in enumerate(clips_list):
+        c_start = max(0.0, float(clip.get("start", 0)))
+        c_end = float(clip.get("end", c_start + 30))
+        c_dur = max(15.0, min(55.0, c_end - c_start))
+        c_end = c_start + c_dur
+
+        raw_seg = f"raw_clip_{i}.mp4"
+        srt_seg = f"subs_{i}.srt"
+        final_seg = f"viral_clip_{i+1}.mp4"
+        for f in [raw_seg, srt_seg, final_seg]:
+            if os.path.exists(f):
+                os.remove(f)
+
+        seg_opts = {
+            "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "outtmpl": raw_seg,
+            "download_ranges": download_range_func(None, [(c_start, c_end)]),
+            "force_keyframes_at_cuts": True,
+            "quiet": True,
+        }
+        with yt_dlp.YoutubeDL(seg_opts) as ydl:
+            ydl.download([clean_url])
 
         srt_lines = []
-        idx = 1
-        for s in segments:
-            if s["end"] >= start and s["start"] <= clip_end:
-                rel_start = max(0.0, s["start"] - start)
-                rel_end = min(duration, s["end"] - start)
-                if rel_end > rel_start and s["text"]:
-                    srt_lines.append(f"{idx}\n{format_srt_time(rel_start)} --> {format_srt_time(rel_end)}\n{s['text'].upper()}\n")
-                    idx += 1
+        idx_s = 1
+        for s in all_segments:
+            if s["end"] >= c_start and s["start"] <= c_end:
+                rel_s = max(0.0, s["start"] - c_start)
+                rel_e = min(c_dur, s["end"] - c_start)
+                if rel_e > rel_s and s["text"]:
+                    words = s["text"].upper().split()
+                    chunk_w = [" ".join(words[k:k+4]) for k in range(0, len(words), 4)]
+                    step_t = (rel_e - rel_s) / max(1, len(chunk_w))
+                    for w_i, w_text in enumerate(chunk_w):
+                        w_s = rel_s + w_i * step_t
+                        w_e = rel_s + (w_i + 1) * step_t
+                        srt_lines.append(f"{idx_s}\n{format_srt_time(w_s)} --> {format_srt_time(w_e)}\n{w_text}\n")
+                        idx_s += 1
 
-        with open(srt_path, "w", encoding="utf-8") as f:
+        with open(srt_seg, "w", encoding="utf-8") as f:
             f.writelines(srt_lines)
 
-        vf_filter = f"crop=ih*9/16:ih,scale=1080:1920,subtitles={srt_path}:force_style='FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Alignment=2,MarginV=65'"
-        subprocess.run(["ffmpeg", "-y", "-ss", str(start), "-i", video_path, "-t", str(duration), "-vf", vf_filter, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", output_clip], check=True)
+        vf_filter = (
+            f"crop=ih*9/16:ih,scale=1080:1920,"
+            f"subtitles={srt_seg}:force_style='FontName=Arial Black,FontSize=21,PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=3,Shadow=1,Alignment=2,MarginV=85'"
+        )
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", raw_seg, "-vf", vf_filter, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", final_seg],
+            check=True,
+        )
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.video(output_clip)
-            with open(output_clip, "rb") as v:
-                st.download_button("Scarica Clip 9:16", v, file_name="viral_clip.mp4", mime="video/mp4")
-        with col2:
-            st.metric("Virality Score", f"{result.get('virality_score', 88)}/100")
-            st.subheader(result.get("hook_title", "Viral Moment"))
-            st.write(f"**Minutaggio:** {round(start, 1)}s - {round(clip_end, 1)}s")
-            st.write(result.get("reason", ""))
+        score_val = clip.get("virality_score", 88)
+        col_v, col_info = st.columns([1, 2.2])
+        with col_v:
+            if os.path.exists(final_seg):
+                st.video(final_seg)
+                with open(final_seg, "rb") as vf:
+                    st.download_button(
+                        f"⬇ DOWNLOAD CLIP #{i+1} (9:16 MP4)",
+                        vf,
+                        file_name=f"clipz_viral_{i+1}.mp4",
+                        mime="video/mp4",
+                        key=f"dl_{i}"
+                    )
+        with col_info:
+            st.markdown(f"""
+            <div class="clip-card">
+                <div class="clip-header">
+                    <div>
+                        <span class="tag-pill">CLIP #{i+1:02d}</span>
+                        <span class="badge-green">9:16 VERTICAL</span>
+                        <span class="badge-muted" style="margin-left:8px;">{format_clock(c_start)} → {format_clock(c_end)} ({round(c_dur)}s)</span>
+                    </div>
+                    <div class="score-ring">{score_val}</div>
+                </div>
+                <div style="font-size:17px; font-weight:800; color:#ffffff; margin-bottom:10px;">
+                    {clip.get('hook_title', 'Viral Moment')}
+                </div>
+                <div style="font-size:13px; color:#9ba3ae; line-height:1.5;">
+                    <strong style="color:#00e676;">SCORE BREAKDOWN · {score_val}/100:</strong> {clip.get('reason', '')}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        progress_bar.progress((i + 1) / len(clips_list))
