@@ -10,19 +10,16 @@ from groq import Groq
 st.set_page_config(page_title="VIRAL//AI CLIPPER — Auto-Clipper Pro", layout="wide")
 client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
-# --- STILE IDENTICO A VIRAL//STREAM FINDER ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&display=swap');
 
-/* Sfondo nero assoluto e font monospace */
 html, body, [class*="css"], .stApp {
     background-color: #090b0e !important;
     color: #e6edf3 !important;
     font-family: 'JetBrains Mono', monospace !important;
 }
 
-/* Nasconde header e footer standard di Streamlit */
 header[data-testid="stHeader"], footer, #MainMenu {
     visibility: hidden !important;
     height: 0px !important;
@@ -32,7 +29,6 @@ header[data-testid="stHeader"], footer, #MainMenu {
     max-width: 1280px !important;
 }
 
-/* Top Bar identica al Finder */
 .finder-topbar {
     display: flex;
     justify-content: space-between;
@@ -74,7 +70,6 @@ header[data-testid="stHeader"], footer, #MainMenu {
     font-size: 12px;
 }
 
-/* Input boxes e Selectbox scuri */
 .stTextInput > div > div > input, .stSelectbox > div > div {
     background-color: #11151c !important;
     color: #e6edf3 !important;
@@ -94,7 +89,6 @@ label {
     letter-spacing: 0.5px;
 }
 
-/* Pulsante principale Verde Neon */
 .stButton > button[kind="primary"] {
     background-color: #00e676 !important;
     color: #050709 !important;
@@ -114,7 +108,6 @@ label {
     box-shadow: 0 0 14px rgba(0, 230, 118, 0.45);
 }
 
-/* Pulsante Download secondario scuro */
 .stDownloadButton > button {
     background-color: #131820 !important;
     color: #00e676 !important;
@@ -128,7 +121,6 @@ label {
     background-color: rgba(0, 230, 118, 0.12) !important;
 }
 
-/* Card delle clip in stile Finder */
 .clip-card {
     background-color: #0e1218;
     border: 1px solid #1e2530;
@@ -194,7 +186,19 @@ def format_clock(seconds):
     secs = int(seconds % 60)
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
-# Pannello di controllo superiore
+# Opzioni anti-blocco YouTube per server cloud
+BASE_YDL_OPTS = {
+    "quiet": True,
+    "no_warnings": True,
+    "nocheckcertificate": True,
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["ios", "android", "web"],
+            "player_skip": ["webpage", "configs"],
+        }
+    },
+}
+
 col_in1, col_in2, col_btn = st.columns([4, 1, 1.5])
 with col_in1:
     url = st.text_input("TARGET VOD / CLIP URL (TWITCH O YOUTUBE)", placeholder="https://www.twitch.tv/videos/... oppure https://www.youtube.com/watch?v=...")
@@ -209,14 +213,14 @@ if run_clicked and url:
 
     with st.spinner("[1/3] SCANNING STREAM METADATA & EXTRACTING AUDIO TRACK..."):
         try:
-            with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+            with yt_dlp.YoutubeDL(BASE_YDL_OPTS) as ydl:
                 info = ydl.extract_info(clean_url, download=False)
                 if info.get("is_live"):
                     st.error("⚠️ LIVE STREAM IN CORSO RILEVATA: inserisci il link del VOD registrato appena terminata la live o una clip esistente.")
                     st.stop()
                 video_title = info.get("title", "Stream VOD")
         except Exception as e:
-            st.error(f"ERRORE ACCESSO VOD: verifica che il link sia pubblico e valido. ({e})")
+            st.error(f"ERRORE ACCESSO VIDEO: {e}")
             st.stop()
 
         full_audio = "full_stream_audio.m4a"
@@ -224,12 +228,16 @@ if run_clicked and url:
             os.remove(full_audio)
 
         audio_opts = {
+            **BASE_YDL_OPTS,
             "format": "bestaudio[ext=m4a]/bestaudio/best",
             "outtmpl": full_audio,
-            "quiet": True,
         }
-        with yt_dlp.YoutubeDL(audio_opts) as ydl:
-            ydl.download([clean_url])
+        try:
+            with yt_dlp.YoutubeDL(audio_opts) as ydl:
+                ydl.download([clean_url])
+        except Exception as e:
+            st.error(f"⚠️ YouTube ha bloccato il download da questo IP cloud. Prova con un link VOD di Twitch oppure aggiungi i cookies YouTube nei Secrets. Dettaglio: {e}")
+            st.stop()
 
     with st.spinner("[2/3] RUNNING AI VIRAL MOMENT DETECTION ACROSS FULL VOD..."):
         chunk_dir = "audio_chunks"
@@ -305,11 +313,11 @@ if run_clicked and url:
                 os.remove(f)
 
         seg_opts = {
+            **BASE_YDL_OPTS,
             "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "outtmpl": raw_seg,
             "download_ranges": download_range_func(None, [(c_start, c_end)]),
             "force_keyframes_at_cuts": True,
-            "quiet": True,
         }
         with yt_dlp.YoutubeDL(seg_opts) as ydl:
             ydl.download([clean_url])
