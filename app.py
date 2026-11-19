@@ -15,13 +15,15 @@ client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
 def prepare_cookie_file():
     if "YT_COOKIES" not in st.secrets:
-        return None
+        return None, 0
     raw_text = str(st.secrets["YT_COOKIES"]).strip()
     if not raw_text:
-        return None
+        return None, 0
 
     cookie_path = "cookies.txt"
     fixed_lines = []
+    entry_count = 0
+
     for line in raw_text.splitlines():
         s_line = line.strip()
         if not s_line:
@@ -30,20 +32,25 @@ def prepare_cookie_file():
             fixed_lines.append(s_line)
         elif "\t" in s_line:
             fixed_lines.append(s_line)
+            entry_count += 1
         else:
             parts = re.split(r"\s+", s_line, maxsplit=6)
-            fixed_lines.append("\t".join(parts))
+            if len(parts) >= 7:
+                fixed_lines.append("\t".join(parts))
+                entry_count += 1
+            else:
+                fixed_lines.append(s_line)
 
-    if not fixed_lines:
-        return None
+    if not fixed_lines or entry_count == 0:
+        return None, 0
 
     with open(cookie_path, "w", encoding="utf-8") as cf:
         cf.write("\n".join(fixed_lines) + "\n")
-    return cookie_path
+    return cookie_path, entry_count
 
 
-COOKIE_FILE = prepare_cookie_file()
-cookie_status = "YT AUTH: ACTIVE" if COOKIE_FILE else "YT AUTH: OFF"
+COOKIE_FILE, COOKIE_ENTRIES = prepare_cookie_file()
+cookie_status = f"YT AUTH: ACTIVE ({COOKIE_ENTRIES}c)" if COOKIE_FILE else "YT AUTH: OFF"
 
 st.markdown(f"""
 <style>
@@ -230,6 +237,7 @@ def build_ydl_opts(use_cookies=True, client_list=None, format_selector=None, ext
         "no_warnings": True,
         "nocheckcertificate": True,
         "ignoreerrors": False,
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     }
     if client_list:
         opts["extractor_args"] = {
@@ -279,22 +287,24 @@ def download_media_resilient(target_url, outtmpl_pattern, mode="audio", ranges=N
         preferred_formats = ["bv*[height<=720]+ba*/b*[height<=720]/bv*+ba*/b*", None]
 
     client_groups = [
-        ["mweb", "web", "tv"],
-        None,
         ["mweb", "web"],
+        ["tv", "mweb"],
+        None,
     ]
 
     attempts = []
+    if COOKIE_FILE:
+        for fmt in preferred_formats:
+            for c_group in client_groups:
+                attempts.append((True, c_group, fmt))
     for fmt in preferred_formats:
         for c_group in client_groups:
-            if COOKIE_FILE:
-                attempts.append((True, c_group, fmt))
             attempts.append((False, c_group, fmt))
 
-    last_error = None
-    last_label = ""
+    errors_by_mode = {}
     for use_ck, c_group, fmt in attempts:
-        label = f"cookies={'ON' if use_ck else 'OFF'}, clients={c_group or 'default'}, fmt={fmt or 'auto'}"
+        mode_key = "cookies=ON" if use_ck else "cookies=OFF"
+        label = f"{mode_key}, clients={c_group or 'default'}, fmt={fmt or 'auto'}"
         opts = build_ydl_opts(
             use_cookies=use_ck,
             client_list=c_group,
@@ -305,10 +315,11 @@ def download_media_resilient(target_url, outtmpl_pattern, mode="audio", ranges=N
         try:
             return run_yt_dlp_resilient(opts, target_url)
         except Exception as err:
-            last_error = err
-            last_label = label
+            if mode_key not in errors_by_mode:
+                errors_by_mode[mode_key] = f"{err} [{label}]"
 
-    raise RuntimeError(f"{last_error} [ultimo tentativo: {last_label}]")
+    summary = " | ".join(f"{k}: {v}" for k, v in errors_by_mode.items())
+    raise RuntimeError(summary)
 
 
 col_in1, col_in2, col_btn = st.columns([4, 1, 1.5])
