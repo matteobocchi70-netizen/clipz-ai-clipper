@@ -3,6 +3,7 @@ import re
 import glob
 import json
 import math
+import shutil
 import subprocess
 import streamlit as st
 import yt_dlp
@@ -50,6 +51,7 @@ def prepare_cookie_file():
 
 
 COOKIE_FILE, COOKIE_ENTRIES = prepare_cookie_file()
+NODE_BIN = shutil.which("node") or shutil.which("nodejs") or "/usr/bin/node"
 cookie_status = f"YT AUTH: ACTIVE ({COOKIE_ENTRIES}c)" if COOKIE_FILE else "YT AUTH: OFF"
 
 st.markdown(f"""
@@ -231,13 +233,51 @@ def format_clock(seconds):
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
 
-def build_ydl_opts(use_cookies=True, client_list=None, format_selector=None, extra_opts=None, include_js_runtime=True):
+def extract_yt_video_id(url_str):
+    patterns = [
+        r"(?:v=|\/v\/|youtu\.be\/|\/embed\/|\/shorts\/)([A-Za-z0-9_-]{11})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, url_str)
+        if m:
+            return m.group(1)
+    return None
+
+
+def fetch_yt_captions_fallback(video_id):
+    """Fallback istantaneo via trascrizione YouTube se il flusso audio viene bloccato dall'IP cloud."""
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        ytt_api = YouTubeTranscriptApi()
+        transcript_list = ytt_api.list(video_id)
+        try:
+            transcript = transcript_list.find_transcript(["it", "en", "es", "fr", "de", "pt"])
+        except Exception:
+            transcript = next(iter(transcript_list))
+        fetched = transcript.fetch()
+        segments = []
+        for item in fetched:
+            txt = (item.get("text") if isinstance(item, dict) else getattr(item, "text", "") or "").replace("\n", " ").strip()
+            st_t = float(item.get("start") if isinstance(item, dict) else getattr(item, "start", 0.0))
+            dur_t = float(item.get("duration") if isinstance(item, dict) else getattr(item, "duration", 2.0))
+            if txt:
+                segments.append({
+                    "start": round(st_t, 2),
+                    "end": round(st_t + max(0.5, dur_t), 2),
+                    "text": txt,
+                })
+        return segments
+    except Exception:
+        return []
+
+
+def build_ydl_opts(use_cookies=True, client_list=None, format_selector=None, extra_opts=None, include_js=True):
     opts = {
         "quiet": True,
         "no_warnings": True,
         "nocheckcertificate": True,
         "ignoreerrors": False,
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "hls_prefer_native": True,
     }
     if client_list:
         opts["extractor_args"] = {
@@ -245,8 +285,8 @@ def build_ydl_opts(use_cookies=True, client_list=None, format_selector=None, ext
                 "player_client": client_list,
             }
         }
-    if include_js_runtime:
-        opts["js_runtimes"] = {"node": {}}
+    if include_js and os.path.exists(NODE_BIN):
+        opts["js_runtimes"] = {"node": {"path": NODE_BIN}}
         opts["remote_components"] = ["ejs:github"]
 
     if format_selector:
@@ -261,16 +301,16 @@ def build_ydl_opts(use_cookies=True, client_list=None, format_selector=None, ext
     return opts
 
 
-def run_yt_dlp_resilient(opts, target_url):
+def run_yt_dlp_resilient(opts, target_url, download=True):
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            return ydl.extract_info(target_url, download=True)
+            return ydl.extract_info(target_url, download=download)
     except Exception as err:
         msg = str(err).lower()
         if any(k in msg for k in ["js_runtimes", "remote_components", "unknown option", "unsupported"]):
             cleaned = {k: v for k, v in opts.items() if k not in ("js_runtimes", "remote_components")}
             with yt_dlp.YoutubeDL(cleaned) as ydl:
-                return ydl.extract_info(target_url, download=True)
+                return ydl.extract_info(target_url, download=download)
         raise
 
 
@@ -281,24 +321,34 @@ def download_media_resilient(target_url, outtmpl_pattern, mode="audio", ranges=N
         extra["force_keyframes_at_cuts"] = True
 
     if mode == "audio":
-        preferred_formats = [None, "ba*/b*/w*"]
+        preferred_formats = [
+            "ba[protocol^=m3u8]/ba/b[protocol^=m3u8]/b",
+            "bestaudio/best",
+            None,
+        ]
     else:
         extra["merge_output_format"] = "mp4"
-        preferred_formats = ["bv*[height<=720]+ba*/b*[height<=720]/bv*+ba*/b*", None]
+        preferred_formats = [
+            "bv*[height<=720][protocol^=m3u8]+ba[protocol^=m3u8]/b[height<=720][protocol^=m3u8]/bv*[height<=720]+ba/b[height<=720]/b",
+            "best[height<=720]/best",
+            None,
+        ]
 
+    # tv e web con cookie risolvono i formati HLS/JS senza sabr mweb
     client_groups = [
-        ["mweb", "web"],
-        ["tv", "mweb"],
+        ["tv", "web"],
+        ["web"],
+        ["android_vr", "ios"],
         None,
     ]
 
     attempts = []
     if COOKIE_FILE:
-        for fmt in preferred_formats:
-            for c_group in client_groups:
-                attempts.append((True, c_group, fmt))
-    for fmt in preferred_formats:
         for c_group in client_groups:
+            for fmt in preferred_formats:
+                attempts.append((True, c_group, fmt))
+    for c_group in [["android_vr", "ios"], ["tv", "web"], None]:
+        for fmt in preferred_formats:
             attempts.append((False, c_group, fmt))
 
     errors_by_mode = {}
@@ -310,10 +360,10 @@ def download_media_resilient(target_url, outtmpl_pattern, mode="audio", ranges=N
             client_list=c_group,
             format_selector=fmt,
             extra_opts={**extra, "outtmpl": outtmpl_pattern},
-            include_js_runtime=True,
+            include_js=True,
         )
         try:
-            return run_yt_dlp_resilient(opts, target_url)
+            return run_yt_dlp_resilient(opts, target_url, download=True)
         except Exception as err:
             if mode_key not in errors_by_mode:
                 errors_by_mode[mode_key] = f"{err} [{label}]"
@@ -336,6 +386,10 @@ with col_btn:
 
 if run_clicked and url:
     clean_url = url.strip()
+    yt_id = extract_yt_video_id(clean_url)
+    all_segments = []
+    video_title = "Stream VOD"
+    used_caption_fallback = False
 
     with st.spinner("[1/3] SCANNING STREAM METADATA & EXTRACTING AUDIO TRACK..."):
         for old_audio in glob.glob("full_stream_audio.*"):
@@ -348,8 +402,7 @@ if run_clicked and url:
                 mode="audio",
             )
             if not info:
-                st.error("ERRORE: impossibile leggere i metadati del video.")
-                st.stop()
+                raise RuntimeError("Metadati video vuoti")
             if info.get("is_live"):
                 st.error(
                     "⚠️ LIVE STREAM IN CORSO RILEVATA: inserisci il link del VOD registrato appena terminata la live o una clip esistente."
@@ -357,64 +410,71 @@ if run_clicked and url:
                 st.stop()
             video_title = info.get("title", "Stream VOD")
         except Exception as e:
-            st.error(f"ERRORE ACCESSO VIDEO: {e}")
-            st.stop()
-
-        audio_files = glob.glob("full_stream_audio.*")
-        if not audio_files:
-            st.error("ERRORE: nessun file audio scaricato sul server.")
-            st.stop()
-        full_audio = audio_files[0]
+            # Se e YouTube, prova a recuperare subito la trascrizione ufficiale per non bloccare il workflow
+            if yt_id:
+                all_segments = fetch_yt_captions_fallback(yt_id)
+                if all_segments:
+                    used_caption_fallback = True
+                    video_title = f"YouTube Video ({yt_id})"
+            if not used_caption_fallback:
+                st.error(f"ERRORE ACCESSO VIDEO: {e}")
+                st.stop()
 
     with st.spinner("[2/3] RUNNING AI VIRAL MOMENT DETECTION ACROSS FULL VOD..."):
-        chunk_dir = "audio_chunks"
-        os.makedirs(chunk_dir, exist_ok=True)
-        for old_f in os.listdir(chunk_dir):
-            os.remove(os.path.join(chunk_dir, old_f))
+        if not used_caption_fallback:
+            audio_files = glob.glob("full_stream_audio.*")
+            if not audio_files:
+                st.error("ERRORE: nessun file audio scaricato sul server.")
+                st.stop()
+            full_audio = audio_files[0]
 
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                full_audio,
-                "-vn",
-                "-ar",
-                "16000",
-                "-ac",
-                "1",
-                "-b:a",
-                "32k",
-                "-f",
-                "segment",
-                "-segment_time",
-                "1200",
-                f"{chunk_dir}/chunk_%03d.mp3",
-            ],
-            check=True,
-        )
+            chunk_dir = "audio_chunks"
+            os.makedirs(chunk_dir, exist_ok=True)
+            for old_f in os.listdir(chunk_dir):
+                os.remove(os.path.join(chunk_dir, old_f))
 
-        chunk_files = sorted(os.listdir(chunk_dir))
-        all_segments = []
-        for idx_c, c_file in enumerate(chunk_files):
-            offset = idx_c * 1200.0
-            c_path = os.path.join(chunk_dir, c_file)
-            with open(c_path, "rb") as f:
-                trans = client.audio.transcriptions.create(
-                    file=(c_file, f.read()),
-                    model="whisper-large-v3-turbo",
-                    response_format="verbose_json",
-                )
-            for s in (trans.segments or []):
-                text_clean = (s.get("text") if isinstance(s, dict) else getattr(s, "text", "") or "").strip()
-                start_val = s.get("start") if isinstance(s, dict) else getattr(s, "start", 0.0)
-                end_val = s.get("end") if isinstance(s, dict) else getattr(s, "end", 0.0)
-                if text_clean:
-                    all_segments.append({
-                        "start": round(float(start_val) + offset, 2),
-                        "end": round(float(end_val) + offset, 2),
-                        "text": text_clean,
-                    })
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    full_audio,
+                    "-vn",
+                    "-ar",
+                    "16000",
+                    "-ac",
+                    "1",
+                    "-b:a",
+                    "32k",
+                    "-f",
+                    "segment",
+                    "-segment_time",
+                    "1200",
+                    f"{chunk_dir}/chunk_%03d.mp3",
+                ],
+                check=True,
+            )
+
+            chunk_files = sorted(os.listdir(chunk_dir))
+            for idx_c, c_file in enumerate(chunk_files):
+                offset = idx_c * 1200.0
+                c_path = os.path.join(chunk_dir, c_file)
+                with open(c_path, "rb") as f:
+                    trans = client.audio.transcriptions.create(
+                        file=(c_file, f.read()),
+                        model="whisper-large-v3-turbo",
+                        response_format="verbose_json",
+                    )
+                for s in (trans.segments or []):
+                    text_clean = (s.get("text") if isinstance(s, dict) else getattr(s, "text", "") or "").strip()
+                    start_val = s.get("start") if isinstance(s, dict) else getattr(s, "start", 0.0)
+                    end_val = s.get("end") if isinstance(s, dict) else getattr(s, "end", 0.0)
+                    if text_clean:
+                        all_segments.append({
+                            "start": round(float(start_val) + offset, 2),
+                            "end": round(float(end_val) + offset, 2),
+                            "text": text_clean,
+                        })
 
         if not all_segments:
             st.error("NESSUN PARLATO RILEVATO NELLO STREAM.")
@@ -470,7 +530,7 @@ if run_clicked and url:
                 ranges=[(c_start, c_end)],
             )
         except Exception as seg_err:
-            st.warning(f"⚠️ Clip #{i+1}: impossibile scaricare il segmento ({seg_err})")
+            st.warning(f"⚠️ Clip #{i+1}: impossibile scaricare il segmento video ({seg_err})")
             continue
 
         raw_files = glob.glob(f"raw_clip_{i}.*")
