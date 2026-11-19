@@ -12,7 +12,6 @@ from groq import Groq
 st.set_page_config(page_title="VIRAL//AI CLIPPER — Auto-Clipper Pro", layout="wide")
 client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
-# Legge i cookies dai Secrets di Streamlit e corregge automaticamente eventuali spazi in tabulazioni
 COOKIE_FILE = None
 if "YT_COOKIES" in st.secrets and st.secrets["YT_COOKIES"].strip():
     COOKIE_FILE = "cookies.txt"
@@ -210,20 +209,32 @@ def format_clock(seconds):
     secs = int(seconds % 60)
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
-# Client compatibili con cookies + runtime JS Deno
-BASE_YDL_OPTS = {
-    "quiet": True,
-    "no_warnings": True,
-    "nocheckcertificate": True,
-    "ignoreerrors": False,
-    "extractor_args": {
-        "youtube": {
-            "player_client": ["web", "mweb", "tv"],
-        }
-    },
-}
-if COOKIE_FILE:
-    BASE_YDL_OPTS["cookiefile"] = COOKIE_FILE
+def build_ydl_opts(use_cookies=True):
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "nocheckcertificate": True,
+        "ignoreerrors": False,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["web_safari", "web_embedded", "-tv_downgraded"],
+            }
+        },
+    }
+    if use_cookies and COOKIE_FILE:
+        opts["cookiefile"] = COOKIE_FILE
+    return opts
+
+def run_yt_dlp_with_fallback(base_opts, target_url):
+    try:
+        with yt_dlp.YoutubeDL(base_opts) as ydl:
+            return ydl.extract_info(target_url, download=True)
+    except Exception as first_err:
+        if "reload" in str(first_err).lower() and "cookiefile" in base_opts:
+            fallback_opts = {k: v for k, v in base_opts.items() if k != "cookiefile"}
+            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                return ydl.extract_info(target_url, download=True)
+        raise first_err
 
 col_in1, col_in2, col_btn = st.columns([4, 1, 1.5])
 with col_in1:
@@ -241,19 +252,17 @@ if run_clicked and url:
         for old_audio in glob.glob("full_stream_audio.*"):
             os.remove(old_audio)
 
-        # Nessun vincolo rigido di formato: yt-dlp sceglie automaticamente il miglior flusso disponibile
         audio_opts = {
-            **BASE_YDL_OPTS,
+            **build_ydl_opts(use_cookies=True),
             "format": "ba/b",
             "outtmpl": "full_stream_audio.%(ext)s",
         }
         try:
-            with yt_dlp.YoutubeDL(audio_opts) as ydl:
-                info = ydl.extract_info(clean_url, download=True)
-                if info.get("is_live"):
-                    st.error("⚠️ LIVE STREAM IN CORSO RILEVATA: inserisci il link del VOD registrato appena terminata la live o una clip esistente.")
-                    st.stop()
-                video_title = info.get("title", "Stream VOD")
+            info = run_yt_dlp_with_fallback(audio_opts, clean_url)
+            if info.get("is_live"):
+                st.error("⚠️ LIVE STREAM IN CORSO RILEVATA: inserisci il link del VOD registrato appena terminata la live o una clip esistente.")
+                st.stop()
+            video_title = info.get("title", "Stream VOD")
         except Exception as e:
             st.error(f"ERRORE ACCESSO VIDEO: {e}")
             st.stop()
@@ -337,15 +346,17 @@ if run_clicked and url:
                 os.remove(f)
 
         seg_opts = {
-            **BASE_YDL_OPTS,
+            **build_ydl_opts(use_cookies=True),
             "format": "bv*[height<=720]+ba/b[height<=720]/b",
             "merge_output_format": "mp4",
             "outtmpl": f"raw_clip_{i}.%(ext)s",
             "download_ranges": download_range_func(None, [(c_start, c_end)]),
             "force_keyframes_at_cuts": True,
         }
-        with yt_dlp.YoutubeDL(seg_opts) as ydl:
-            ydl.download([clean_url])
+        try:
+            run_yt_dlp_with_fallback(seg_opts, clean_url)
+        except Exception:
+            continue
 
         raw_files = glob.glob(f"raw_clip_{i}.*")
         if not raw_files:
