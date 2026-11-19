@@ -12,6 +12,7 @@ from groq import Groq
 st.set_page_config(page_title="VIRAL//AI CLIPPER — Auto-Clipper Pro", layout="wide")
 client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
+# Legge i cookies dai Secrets di Streamlit e corregge automaticamente eventuali spazi in tabulazioni
 COOKIE_FILE = None
 if "YT_COOKIES" in st.secrets and st.secrets["YT_COOKIES"].strip():
     COOKIE_FILE = "cookies.txt"
@@ -209,12 +210,17 @@ def format_clock(seconds):
     secs = int(seconds % 60)
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
+# Client alternativi anti-blocco JS e anti-errore formati su server cloud
 BASE_YDL_OPTS = {
     "quiet": True,
     "no_warnings": True,
     "nocheckcertificate": True,
     "ignoreerrors": False,
-    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["tv_embedded", "mweb", "web"],
+        }
+    },
 }
 if COOKIE_FILE:
     BASE_YDL_OPTS["cookiefile"] = COOKIE_FILE
@@ -235,6 +241,7 @@ if run_clicked and url:
         for old_audio in glob.glob("full_stream_audio.*"):
             os.remove(old_audio)
 
+        # Nessun vincolo rigido di formato: prende subito il miglior flusso audio/media disponibile
         audio_opts = {
             **BASE_YDL_OPTS,
             "format": "bestaudio/best",
@@ -263,6 +270,7 @@ if run_clicked and url:
         for old_f in os.listdir(chunk_dir):
             os.remove(os.path.join(chunk_dir, old_f))
 
+        # FFmpeg estrae e spezza l'audio in blocchi leggeri da 20 minuti anche se il file iniziale contiene video
         subprocess.run(
             ["ffmpeg", "-y", "-i", full_audio, "-vn", "-ar", "16000", "-ac", "1", "-b:a", "32k", "-f", "segment", "-segment_time", "1200", f"{chunk_dir}/chunk_%03d.mp3"],
             check=True,
@@ -329,6 +337,7 @@ if run_clicked and url:
             if os.path.exists(f):
                 os.remove(f)
 
+        # Fallback universale sui formati video
         seg_opts = {
             **BASE_YDL_OPTS,
             "format": "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
