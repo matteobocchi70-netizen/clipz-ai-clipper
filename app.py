@@ -224,31 +224,21 @@ def format_clock(seconds):
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
 
-def supports_remote_components():
-    try:
-        from yt_dlp.YoutubeDL import YoutubeDL
-        params = YoutubeDL({}).params
-        return "remote_components" in params or True
-    except Exception:
-        return False
-
-
-def build_ydl_opts(use_cookies=True, client_list=None, format_selector=None, extra_opts=None):
-    if client_list is None:
-        client_list = ["mweb", "web", "tv"]
-
+def build_ydl_opts(use_cookies=True, client_list=None, format_selector=None, extra_opts=None, include_js_runtime=True):
     opts = {
         "quiet": True,
         "no_warnings": True,
         "nocheckcertificate": True,
         "ignoreerrors": False,
-        "extractor_args": {
+    }
+    if client_list:
+        opts["extractor_args"] = {
             "youtube": {
                 "player_client": client_list,
             }
-        },
-    }
-    if supports_remote_components():
+        }
+    if include_js_runtime:
+        opts["js_runtimes"] = {"node": {}}
         opts["remote_components"] = ["ejs:github"]
 
     if format_selector:
@@ -263,30 +253,20 @@ def build_ydl_opts(use_cookies=True, client_list=None, format_selector=None, ext
     return opts
 
 
-def inspect_available_formats(target_url):
+def run_yt_dlp_resilient(opts, target_url):
     try:
-        probe_opts = build_ydl_opts(use_cookies=bool(COOKIE_FILE), client_list=["mweb", "web", "tv"])
-        probe_opts["skip_download"] = True
-        with yt_dlp.YoutubeDL(probe_opts) as ydl:
-            info = ydl.extract_info(target_url, download=False)
-            fmts = info.get("formats") or []
-            summary = []
-            for f in fmts[-10:]:
-                summary.append(
-                    f"{f.get('format_id')}({f.get('ext')}, {f.get('vcodec')}/{f.get('acodec')}, h={f.get('height')})"
-                )
-            return ", ".join(summary) if summary else "nessun formato restituito"
-    except Exception as probe_err:
-        return f"impossibile sondare formati: {probe_err}"
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(target_url, download=True)
+    except Exception as err:
+        msg = str(err).lower()
+        if any(k in msg for k in ["js_runtimes", "remote_components", "unknown option", "unsupported"]):
+            cleaned = {k: v for k, v in opts.items() if k not in ("js_runtimes", "remote_components")}
+            with yt_dlp.YoutubeDL(cleaned) as ydl:
+                return ydl.extract_info(target_url, download=True)
+        raise
 
 
 def download_media_resilient(target_url, outtmpl_pattern, mode="audio", ranges=None):
-    """
-    Prova piu combinazioni in ordine:
-    1) Con cookie + selettore preferito (senza format se None, cosi yt-dlp sceglie cio che esiste)
-    2) Con cookie + nessun selettore format (massima compatibilita)
-    3) Senza cookie + nessun selettore format (utile se i cookie triggerano reload/bot su IP cloud)
-    """
     extra = {}
     if ranges:
         extra["download_ranges"] = download_range_func(None, ranges)
@@ -298,36 +278,37 @@ def download_media_resilient(target_url, outtmpl_pattern, mode="audio", ranges=N
         extra["merge_output_format"] = "mp4"
         preferred_formats = ["bv*[height<=720]+ba*/b*[height<=720]/bv*+ba*/b*", None]
 
+    client_groups = [
+        ["mweb", "web", "tv"],
+        None,
+        ["mweb", "web"],
+    ]
+
     attempts = []
     for fmt in preferred_formats:
-        if COOKIE_FILE:
-            attempts.append((True, ["mweb", "web", "tv"], fmt))
-        attempts.append((False, ["mweb", "web", "tv"], fmt))
+        for c_group in client_groups:
+            if COOKIE_FILE:
+                attempts.append((True, c_group, fmt))
+            attempts.append((False, c_group, fmt))
 
     last_error = None
-    for use_ck, clients, fmt in attempts:
+    last_label = ""
+    for use_ck, c_group, fmt in attempts:
+        label = f"cookies={'ON' if use_ck else 'OFF'}, clients={c_group or 'default'}, fmt={fmt or 'auto'}"
         opts = build_ydl_opts(
             use_cookies=use_ck,
-            client_list=clients,
+            client_list=c_group,
             format_selector=fmt,
             extra_opts={**extra, "outtmpl": outtmpl_pattern},
+            include_js_runtime=True,
         )
-        # Se remote_components causa errore su versioni vecchie di yt-dlp, riprova senza quel parametro
         try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                return ydl.extract_info(target_url, download=True)
+            return run_yt_dlp_resilient(opts, target_url)
         except Exception as err:
-            if "remote_components" in str(err).lower() and "remote_components" in opts:
-                opts.pop("remote_components", None)
-                try:
-                    with yt_dlp.YoutubeDL(opts) as ydl:
-                        return ydl.extract_info(target_url, download=True)
-                except Exception as err2:
-                    last_error = err2
-            else:
-                last_error = err
+            last_error = err
+            last_label = label
 
-    raise last_error
+    raise RuntimeError(f"{last_error} [ultimo tentativo: {last_label}]")
 
 
 col_in1, col_in2, col_btn = st.columns([4, 1, 1.5])
@@ -365,8 +346,7 @@ if run_clicked and url:
                 st.stop()
             video_title = info.get("title", "Stream VOD")
         except Exception as e:
-            fmts_debug = inspect_available_formats(clean_url)
-            st.error(f"ERRORE ACCESSO VIDEO: {e}\n\nDiagnostica formati rilevati: {fmts_debug}")
+            st.error(f"ERRORE ACCESSO VIDEO: {e}")
             st.stop()
 
         audio_files = glob.glob("full_stream_audio.*")
