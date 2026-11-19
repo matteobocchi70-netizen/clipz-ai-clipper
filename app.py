@@ -12,12 +12,17 @@ from groq import Groq
 st.set_page_config(page_title="VIRAL//AI CLIPPER — Auto-Clipper Pro", layout="wide")
 client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
-COOKIE_FILE = None
-if "YT_COOKIES" in st.secrets and st.secrets["YT_COOKIES"].strip():
-    COOKIE_FILE = "cookies.txt"
-    raw_cookies = st.secrets["YT_COOKIES"].strip().splitlines()
+
+def prepare_cookie_file():
+    if "YT_COOKIES" not in st.secrets:
+        return None
+    raw_text = str(st.secrets["YT_COOKIES"]).strip()
+    if not raw_text:
+        return None
+
+    cookie_path = "cookies.txt"
     fixed_lines = []
-    for line in raw_cookies:
+    for line in raw_text.splitlines():
         s_line = line.strip()
         if not s_line:
             continue
@@ -28,9 +33,16 @@ if "YT_COOKIES" in st.secrets and st.secrets["YT_COOKIES"].strip():
         else:
             parts = re.split(r"\s+", s_line, maxsplit=6)
             fixed_lines.append("\t".join(parts))
-    with open(COOKIE_FILE, "w", encoding="utf-8") as cf:
-        cf.write("\n".join(fixed_lines) + "\n")
 
+    if not fixed_lines:
+        return None
+
+    with open(cookie_path, "w", encoding="utf-8") as cf:
+        cf.write("\n".join(fixed_lines) + "\n")
+    return cookie_path
+
+
+COOKIE_FILE = prepare_cookie_file()
 cookie_status = "YT AUTH: ACTIVE" if COOKIE_FILE else "YT AUTH: OFF"
 
 st.markdown(f"""
@@ -196,6 +208,7 @@ label {{
 </div>
 """, unsafe_allow_html=True)
 
+
 def format_srt_time(seconds):
     hrs = int(seconds // 3600)
     mins = int((seconds % 3600) // 60)
@@ -203,13 +216,27 @@ def format_srt_time(seconds):
     millis = int((seconds - int(seconds)) * 1000)
     return f"{hrs:02d}:{mins:02d}:{secs:02d},{millis:03d}"
 
+
 def format_clock(seconds):
     hrs = int(seconds // 3600)
     mins = int((seconds % 3600) // 60)
     secs = int(seconds % 60)
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
-def build_ydl_opts(use_cookies=True):
+
+def supports_remote_components():
+    try:
+        from yt_dlp.YoutubeDL import YoutubeDL
+        params = YoutubeDL({}).params
+        return "remote_components" in params or True
+    except Exception:
+        return False
+
+
+def build_ydl_opts(use_cookies=True, client_list=None, format_selector=None, extra_opts=None):
+    if client_list is None:
+        client_list = ["mweb", "web", "tv"]
+
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -217,28 +244,98 @@ def build_ydl_opts(use_cookies=True):
         "ignoreerrors": False,
         "extractor_args": {
             "youtube": {
-                "player_client": ["web_safari", "web_embedded", "-tv_downgraded"],
+                "player_client": client_list,
             }
         },
     }
-    if use_cookies and COOKIE_FILE:
+    if supports_remote_components():
+        opts["remote_components"] = ["ejs:github"]
+
+    if format_selector:
+        opts["format"] = format_selector
+
+    if use_cookies and COOKIE_FILE and os.path.exists(COOKIE_FILE):
         opts["cookiefile"] = COOKIE_FILE
+
+    if extra_opts:
+        opts.update(extra_opts)
+
     return opts
 
-def run_yt_dlp_with_fallback(base_opts, target_url):
+
+def inspect_available_formats(target_url):
     try:
-        with yt_dlp.YoutubeDL(base_opts) as ydl:
-            return ydl.extract_info(target_url, download=True)
-    except Exception as first_err:
-        if "reload" in str(first_err).lower() and "cookiefile" in base_opts:
-            fallback_opts = {k: v for k, v in base_opts.items() if k != "cookiefile"}
-            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+        probe_opts = build_ydl_opts(use_cookies=bool(COOKIE_FILE), client_list=["mweb", "web", "tv"])
+        probe_opts["skip_download"] = True
+        with yt_dlp.YoutubeDL(probe_opts) as ydl:
+            info = ydl.extract_info(target_url, download=False)
+            fmts = info.get("formats") or []
+            summary = []
+            for f in fmts[-10:]:
+                summary.append(
+                    f"{f.get('format_id')}({f.get('ext')}, {f.get('vcodec')}/{f.get('acodec')}, h={f.get('height')})"
+                )
+            return ", ".join(summary) if summary else "nessun formato restituito"
+    except Exception as probe_err:
+        return f"impossibile sondare formati: {probe_err}"
+
+
+def download_media_resilient(target_url, outtmpl_pattern, mode="audio", ranges=None):
+    """
+    Prova piu combinazioni in ordine:
+    1) Con cookie + selettore preferito (senza format se None, cosi yt-dlp sceglie cio che esiste)
+    2) Con cookie + nessun selettore format (massima compatibilita)
+    3) Senza cookie + nessun selettore format (utile se i cookie triggerano reload/bot su IP cloud)
+    """
+    extra = {}
+    if ranges:
+        extra["download_ranges"] = download_range_func(None, ranges)
+        extra["force_keyframes_at_cuts"] = True
+
+    if mode == "audio":
+        preferred_formats = [None, "ba*/b*/w*"]
+    else:
+        extra["merge_output_format"] = "mp4"
+        preferred_formats = ["bv*[height<=720]+ba*/b*[height<=720]/bv*+ba*/b*", None]
+
+    attempts = []
+    for fmt in preferred_formats:
+        if COOKIE_FILE:
+            attempts.append((True, ["mweb", "web", "tv"], fmt))
+        attempts.append((False, ["mweb", "web", "tv"], fmt))
+
+    last_error = None
+    for use_ck, clients, fmt in attempts:
+        opts = build_ydl_opts(
+            use_cookies=use_ck,
+            client_list=clients,
+            format_selector=fmt,
+            extra_opts={**extra, "outtmpl": outtmpl_pattern},
+        )
+        # Se remote_components causa errore su versioni vecchie di yt-dlp, riprova senza quel parametro
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
                 return ydl.extract_info(target_url, download=True)
-        raise first_err
+        except Exception as err:
+            if "remote_components" in str(err).lower() and "remote_components" in opts:
+                opts.pop("remote_components", None)
+                try:
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        return ydl.extract_info(target_url, download=True)
+                except Exception as err2:
+                    last_error = err2
+            else:
+                last_error = err
+
+    raise last_error
+
 
 col_in1, col_in2, col_btn = st.columns([4, 1, 1.5])
 with col_in1:
-    url = st.text_input("TARGET VOD / CLIP URL (TWITCH O YOUTUBE)", placeholder="https://www.twitch.tv/videos/... oppure https://www.youtube.com/watch?v=...")
+    url = st.text_input(
+        "TARGET VOD / CLIP URL (TWITCH O YOUTUBE)",
+        placeholder="https://www.twitch.tv/videos/... oppure https://www.youtube.com/watch?v=...",
+    )
 with col_in2:
     num_clips = st.selectbox("CLIPS OUTPUT", [3, 5], index=1)
 with col_btn:
@@ -252,24 +349,29 @@ if run_clicked and url:
         for old_audio in glob.glob("full_stream_audio.*"):
             os.remove(old_audio)
 
-        audio_opts = {
-            **build_ydl_opts(use_cookies=True),
-            "format": "ba/b",
-            "outtmpl": "full_stream_audio.%(ext)s",
-        }
         try:
-            info = run_yt_dlp_with_fallback(audio_opts, clean_url)
+            info = download_media_resilient(
+                clean_url,
+                "full_stream_audio.%(ext)s",
+                mode="audio",
+            )
+            if not info:
+                st.error("ERRORE: impossibile leggere i metadati del video.")
+                st.stop()
             if info.get("is_live"):
-                st.error("⚠️ LIVE STREAM IN CORSO RILEVATA: inserisci il link del VOD registrato appena terminata la live o una clip esistente.")
+                st.error(
+                    "⚠️ LIVE STREAM IN CORSO RILEVATA: inserisci il link del VOD registrato appena terminata la live o una clip esistente."
+                )
                 st.stop()
             video_title = info.get("title", "Stream VOD")
         except Exception as e:
-            st.error(f"ERRORE ACCESSO VIDEO: {e}")
+            fmts_debug = inspect_available_formats(clean_url)
+            st.error(f"ERRORE ACCESSO VIDEO: {e}\n\nDiagnostica formati rilevati: {fmts_debug}")
             st.stop()
 
         audio_files = glob.glob("full_stream_audio.*")
         if not audio_files:
-            st.error("ERRORE: nessun file audio scaricato.")
+            st.error("ERRORE: nessun file audio scaricato sul server.")
             st.stop()
         full_audio = audio_files[0]
 
@@ -280,7 +382,24 @@ if run_clicked and url:
             os.remove(os.path.join(chunk_dir, old_f))
 
         subprocess.run(
-            ["ffmpeg", "-y", "-i", full_audio, "-vn", "-ar", "16000", "-ac", "1", "-b:a", "32k", "-f", "segment", "-segment_time", "1200", f"{chunk_dir}/chunk_%03d.mp3"],
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                full_audio,
+                "-vn",
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                "-b:a",
+                "32k",
+                "-f",
+                "segment",
+                "-segment_time",
+                "1200",
+                f"{chunk_dir}/chunk_%03d.mp3",
+            ],
             check=True,
         )
 
@@ -296,11 +415,15 @@ if run_clicked and url:
                     response_format="verbose_json",
                 )
             for s in (trans.segments or []):
-                all_segments.append({
-                    "start": round(s["start"] + offset, 2),
-                    "end": round(s["end"] + offset, 2),
-                    "text": s["text"].strip()
-                })
+                text_clean = (s.get("text") if isinstance(s, dict) else getattr(s, "text", "") or "").strip()
+                start_val = s.get("start") if isinstance(s, dict) else getattr(s, "start", 0.0)
+                end_val = s.get("end") if isinstance(s, dict) else getattr(s, "end", 0.0)
+                if text_clean:
+                    all_segments.append({
+                        "start": round(float(start_val) + offset, 2),
+                        "end": round(float(end_val) + offset, 2),
+                        "text": text_clean,
+                    })
 
         if not all_segments:
             st.error("NESSUN PARLATO RILEVATO NELLO STREAM.")
@@ -330,7 +453,10 @@ if run_clicked and url:
         ai_data = json.loads(chat.choices[0].message.content)
         clips_list = ai_data.get("clips", [])[:num_clips]
 
-    st.markdown(f"<div class='badge-green' style='margin-bottom:15px;'>✓ RILEVATI {len(clips_list)} MOMENTI VIRALI SU: {video_title[:70]}</div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='badge-green' style='margin-bottom:15px;'>✓ RILEVATI {len(clips_list)} MOMENTI VIRALI SU: {video_title[:70]}</div>",
+        unsafe_allow_html=True,
+    )
     progress_bar = st.progress(0)
 
     for i, clip in enumerate(clips_list):
@@ -345,17 +471,15 @@ if run_clicked and url:
             if os.path.exists(f):
                 os.remove(f)
 
-        seg_opts = {
-            **build_ydl_opts(use_cookies=True),
-            "format": "bv*[height<=720]+ba/b[height<=720]/b",
-            "merge_output_format": "mp4",
-            "outtmpl": f"raw_clip_{i}.%(ext)s",
-            "download_ranges": download_range_func(None, [(c_start, c_end)]),
-            "force_keyframes_at_cuts": True,
-        }
         try:
-            run_yt_dlp_with_fallback(seg_opts, clean_url)
-        except Exception:
+            download_media_resilient(
+                clean_url,
+                f"raw_clip_{i}.%(ext)s",
+                mode="video",
+                ranges=[(c_start, c_end)],
+            )
+        except Exception as seg_err:
+            st.warning(f"⚠️ Clip #{i+1}: impossibile scaricare il segmento ({seg_err})")
             continue
 
         raw_files = glob.glob(f"raw_clip_{i}.*")
@@ -387,7 +511,23 @@ if run_clicked and url:
             f"subtitles={srt_seg}:force_style='FontName=Arial Black,FontSize=21,PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=3,Shadow=1,Alignment=2,MarginV=85'"
         )
         subprocess.run(
-            ["ffmpeg", "-y", "-i", raw_seg, "-vf", vf_filter, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", final_seg],
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                raw_seg,
+                "-vf",
+                vf_filter,
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
+                "-c:a",
+                "aac",
+                final_seg,
+            ],
             check=True,
         )
 
@@ -402,7 +542,7 @@ if run_clicked and url:
                         vf,
                         file_name=f"clipz_viral_{i+1}.mp4",
                         mime="video/mp4",
-                        key=f"dl_{i}"
+                        key=f"dl_{i}",
                     )
         with col_info:
             st.markdown(f"""
