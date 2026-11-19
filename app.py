@@ -210,7 +210,7 @@ def format_clock(seconds):
     secs = int(seconds % 60)
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
-# Client alternativi anti-blocco JS e anti-errore formati su server cloud
+# Client compatibili con cookies + runtime JS Deno
 BASE_YDL_OPTS = {
     "quiet": True,
     "no_warnings": True,
@@ -218,7 +218,7 @@ BASE_YDL_OPTS = {
     "ignoreerrors": False,
     "extractor_args": {
         "youtube": {
-            "player_client": ["tv_embedded", "mweb", "web"],
+            "player_client": ["web", "mweb", "tv"],
         }
     },
 }
@@ -241,10 +241,10 @@ if run_clicked and url:
         for old_audio in glob.glob("full_stream_audio.*"):
             os.remove(old_audio)
 
-        # Nessun vincolo rigido di formato: prende subito il miglior flusso audio/media disponibile
+        # Nessun vincolo rigido di formato: yt-dlp sceglie automaticamente il miglior flusso disponibile
         audio_opts = {
             **BASE_YDL_OPTS,
-            "format": "bestaudio/best",
+            "format": "ba/b",
             "outtmpl": "full_stream_audio.%(ext)s",
         }
         try:
@@ -270,7 +270,6 @@ if run_clicked and url:
         for old_f in os.listdir(chunk_dir):
             os.remove(os.path.join(chunk_dir, old_f))
 
-        # FFmpeg estrae e spezza l'audio in blocchi leggeri da 20 minuti anche se il file iniziale contiene video
         subprocess.run(
             ["ffmpeg", "-y", "-i", full_audio, "-vn", "-ar", "16000", "-ac", "1", "-b:a", "32k", "-f", "segment", "-segment_time", "1200", f"{chunk_dir}/chunk_%03d.mp3"],
             check=True,
@@ -337,10 +336,9 @@ if run_clicked and url:
             if os.path.exists(f):
                 os.remove(f)
 
-        # Fallback universale sui formati video
         seg_opts = {
             **BASE_YDL_OPTS,
-            "format": "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+            "format": "bv*[height<=720]+ba/b[height<=720]/b",
             "merge_output_format": "mp4",
             "outtmpl": f"raw_clip_{i}.%(ext)s",
             "download_ranges": download_range_func(None, [(c_start, c_end)]),
