@@ -1,5 +1,6 @@
 import os
 import re
+import glob
 import json
 import math
 import subprocess
@@ -11,7 +12,6 @@ from groq import Groq
 st.set_page_config(page_title="VIRAL//AI CLIPPER — Auto-Clipper Pro", layout="wide")
 client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
-# Legge i cookies dai Secrets di Streamlit e corregge automaticamente eventuali spazi in tabulazioni
 COOKIE_FILE = None
 if "YT_COOKIES" in st.secrets and st.secrets["YT_COOKIES"].strip():
     COOKIE_FILE = "cookies.txt"
@@ -213,6 +213,8 @@ BASE_YDL_OPTS = {
     "quiet": True,
     "no_warnings": True,
     "nocheckcertificate": True,
+    "ignoreerrors": False,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 }
 if COOKIE_FILE:
     BASE_YDL_OPTS["cookiefile"] = COOKIE_FILE
@@ -230,9 +232,17 @@ if run_clicked and url:
     clean_url = url.strip()
 
     with st.spinner("[1/3] SCANNING STREAM METADATA & EXTRACTING AUDIO TRACK..."):
+        for old_audio in glob.glob("full_stream_audio.*"):
+            os.remove(old_audio)
+
+        audio_opts = {
+            **BASE_YDL_OPTS,
+            "format": "bestaudio/best",
+            "outtmpl": "full_stream_audio.%(ext)s",
+        }
         try:
-            with yt_dlp.YoutubeDL(BASE_YDL_OPTS) as ydl:
-                info = ydl.extract_info(clean_url, download=False)
+            with yt_dlp.YoutubeDL(audio_opts) as ydl:
+                info = ydl.extract_info(clean_url, download=True)
                 if info.get("is_live"):
                     st.error("⚠️ LIVE STREAM IN CORSO RILEVATA: inserisci il link del VOD registrato appena terminata la live o una clip esistente.")
                     st.stop()
@@ -241,21 +251,11 @@ if run_clicked and url:
             st.error(f"ERRORE ACCESSO VIDEO: {e}")
             st.stop()
 
-        full_audio = "full_stream_audio.m4a"
-        if os.path.exists(full_audio):
-            os.remove(full_audio)
-
-        audio_opts = {
-            **BASE_YDL_OPTS,
-            "format": "bestaudio[ext=m4a]/bestaudio/best",
-            "outtmpl": full_audio,
-        }
-        try:
-            with yt_dlp.YoutubeDL(audio_opts) as ydl:
-                ydl.download([clean_url])
-        except Exception as e:
-            st.error(f"⚠️ Errore download audio: {e}")
+        audio_files = glob.glob("full_stream_audio.*")
+        if not audio_files:
+            st.error("ERRORE: nessun file audio scaricato.")
             st.stop()
+        full_audio = audio_files[0]
 
     with st.spinner("[2/3] RUNNING AI VIRAL MOMENT DETECTION ACROSS FULL VOD..."):
         chunk_dir = "audio_chunks"
@@ -323,22 +323,27 @@ if run_clicked and url:
         c_dur = max(15.0, min(55.0, c_end - c_start))
         c_end = c_start + c_dur
 
-        raw_seg = f"raw_clip_{i}.mp4"
         srt_seg = f"subs_{i}.srt"
         final_seg = f"viral_clip_{i+1}.mp4"
-        for f in [raw_seg, srt_seg, final_seg]:
+        for f in glob.glob(f"raw_clip_{i}.*") + [srt_seg, final_seg]:
             if os.path.exists(f):
                 os.remove(f)
 
         seg_opts = {
             **BASE_YDL_OPTS,
-            "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "outtmpl": raw_seg,
+            "format": "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+            "merge_output_format": "mp4",
+            "outtmpl": f"raw_clip_{i}.%(ext)s",
             "download_ranges": download_range_func(None, [(c_start, c_end)]),
             "force_keyframes_at_cuts": True,
         }
         with yt_dlp.YoutubeDL(seg_opts) as ydl:
             ydl.download([clean_url])
+
+        raw_files = glob.glob(f"raw_clip_{i}.*")
+        if not raw_files:
+            continue
+        raw_seg = raw_files[0]
 
         srt_lines = []
         idx_s = 1
