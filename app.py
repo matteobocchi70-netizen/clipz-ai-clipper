@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import math
 import subprocess
@@ -10,26 +11,48 @@ from groq import Groq
 st.set_page_config(page_title="VIRAL//AI CLIPPER — Auto-Clipper Pro", layout="wide")
 client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
-st.markdown("""
+# Legge i cookies dai Secrets di Streamlit e corregge automaticamente eventuali spazi in tabulazioni
+COOKIE_FILE = None
+if "YT_COOKIES" in st.secrets and st.secrets["YT_COOKIES"].strip():
+    COOKIE_FILE = "cookies.txt"
+    raw_cookies = st.secrets["YT_COOKIES"].strip().splitlines()
+    fixed_lines = []
+    for line in raw_cookies:
+        s_line = line.strip()
+        if not s_line:
+            continue
+        if s_line.startswith("#") and not s_line.startswith("#HttpOnly_"):
+            fixed_lines.append(s_line)
+        elif "\t" in s_line:
+            fixed_lines.append(s_line)
+        else:
+            parts = re.split(r"\s+", s_line, maxsplit=6)
+            fixed_lines.append("\t".join(parts))
+    with open(COOKIE_FILE, "w", encoding="utf-8") as cf:
+        cf.write("\n".join(fixed_lines) + "\n")
+
+cookie_status = "YT AUTH: ACTIVE" if COOKIE_FILE else "YT AUTH: OFF"
+
+st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&display=swap');
 
-html, body, [class*="css"], .stApp {
+html, body, [class*="css"], .stApp {{
     background-color: #090b0e !important;
     color: #e6edf3 !important;
     font-family: 'JetBrains Mono', monospace !important;
-}
+}}
 
-header[data-testid="stHeader"], footer, #MainMenu {
+header[data-testid="stHeader"], footer, #MainMenu {{
     visibility: hidden !important;
     height: 0px !important;
-}
-.block-container {
+}}
+.block-container {{
     padding-top: 1.2rem !important;
     max-width: 1280px !important;
-}
+}}
 
-.finder-topbar {
+.finder-topbar {{
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -38,8 +61,8 @@ header[data-testid="stHeader"], footer, #MainMenu {
     border-radius: 6px;
     padding: 12px 18px;
     margin-bottom: 18px;
-}
-.finder-brand {
+}}
+.finder-brand {{
     display: flex;
     align-items: center;
     gap: 12px;
@@ -47,16 +70,16 @@ header[data-testid="stHeader"], footer, #MainMenu {
     font-size: 16px;
     letter-spacing: 0.5px;
     color: #ffffff;
-}
-.dot-red {
+}}
+.dot-red {{
     height: 9px;
     width: 9px;
     background-color: #ff4b4b;
     border-radius: 50%;
     display: inline-block;
     box-shadow: 0 0 8px #ff4b4b;
-}
-.badge-green {
+}}
+.badge-green {{
     background-color: rgba(0, 230, 118, 0.14);
     color: #00e676;
     border: 1px solid #00e676;
@@ -64,32 +87,32 @@ header[data-testid="stHeader"], footer, #MainMenu {
     border-radius: 4px;
     font-size: 11px;
     font-weight: 700;
-}
-.badge-muted {
+}}
+.badge-muted {{
     color: #7d8590;
     font-size: 12px;
-}
+}}
 
-.stTextInput > div > div > input, .stSelectbox > div > div {
+.stTextInput > div > div > input, .stSelectbox > div > div {{
     background-color: #11151c !important;
     color: #e6edf3 !important;
     border: 1px solid #262e3a !important;
     border-radius: 6px !important;
     font-family: 'JetBrains Mono', monospace !important;
     font-size: 13px !important;
-}
-.stTextInput > div > div > input:focus {
+}}
+.stTextInput > div > div > input:focus {{
     border-color: #00e676 !important;
     box-shadow: 0 0 0 1px #00e676 !important;
-}
-label {
+}}
+label {{
     color: #8b949e !important;
     font-size: 12px !important;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-}
+}}
 
-.stButton > button[kind="primary"] {
+.stButton > button[kind="primary"] {{
     background-color: #00e676 !important;
     color: #050709 !important;
     border: none !important;
@@ -102,13 +125,13 @@ label {
     letter-spacing: 0.5px;
     transition: all 0.15s ease;
     width: 100%;
-}
-.stButton > button[kind="primary"]:hover {
+}}
+.stButton > button[kind="primary"]:hover {{
     background-color: #00c865 !important;
     box-shadow: 0 0 14px rgba(0, 230, 118, 0.45);
-}
+}}
 
-.stDownloadButton > button {
+.stDownloadButton > button {{
     background-color: #131820 !important;
     color: #00e676 !important;
     border: 1px solid #00e676 !important;
@@ -116,25 +139,25 @@ label {
     font-family: 'JetBrains Mono', monospace !important;
     font-weight: 700 !important;
     width: 100%;
-}
-.stDownloadButton > button:hover {
+}}
+.stDownloadButton > button:hover {{
     background-color: rgba(0, 230, 118, 0.12) !important;
-}
+}}
 
-.clip-card {
+.clip-card {{
     background-color: #0e1218;
     border: 1px solid #1e2530;
     border-radius: 8px;
     padding: 18px;
     margin-bottom: 14px;
-}
-.clip-header {
+}}
+.clip-header {{
     display: flex;
     justify-content: space-between;
     align-items: center;
     margin-bottom: 12px;
-}
-.score-ring {
+}}
+.score-ring {{
     border: 2px solid #00e676;
     color: #00e676;
     background: rgba(0, 230, 118, 0.08);
@@ -146,8 +169,8 @@ label {
     justify-content: center;
     font-weight: 800;
     font-size: 16px;
-}
-.tag-pill {
+}}
+.tag-pill {{
     display: inline-block;
     background: #161b22;
     border: 1px solid #2b333e;
@@ -157,7 +180,7 @@ label {
     font-size: 11px;
     font-weight: 700;
     margin-right: 6px;
-}
+}}
 </style>
 
 <div class="finder-topbar">
@@ -165,7 +188,7 @@ label {
         <span class="dot-red"></span>
         <span>VIRAL//AI CLIPPER</span>
         <span class="badge-green">ENGINE: WHISPER + LLAMA-3</span>
-        <span class="badge-muted">9:16 AUTO-CROP · SUBTITLES ON</span>
+        <span class="badge-muted">9:16 AUTO-CROP · {cookie_status}</span>
     </div>
     <div>
         <span class="badge-green">AUTO-CLIPPER PRO</span>
@@ -186,18 +209,13 @@ def format_clock(seconds):
     secs = int(seconds % 60)
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
-# Opzioni anti-blocco YouTube per server cloud
 BASE_YDL_OPTS = {
     "quiet": True,
     "no_warnings": True,
     "nocheckcertificate": True,
-    "extractor_args": {
-        "youtube": {
-            "player_client": ["ios", "android", "web"],
-            "player_skip": ["webpage", "configs"],
-        }
-    },
 }
+if COOKIE_FILE:
+    BASE_YDL_OPTS["cookiefile"] = COOKIE_FILE
 
 col_in1, col_in2, col_btn = st.columns([4, 1, 1.5])
 with col_in1:
@@ -236,7 +254,7 @@ if run_clicked and url:
             with yt_dlp.YoutubeDL(audio_opts) as ydl:
                 ydl.download([clean_url])
         except Exception as e:
-            st.error(f"⚠️ YouTube ha bloccato il download da questo IP cloud. Prova con un link VOD di Twitch oppure aggiungi i cookies YouTube nei Secrets. Dettaglio: {e}")
+            st.error(f"⚠️ Errore download audio: {e}")
             st.stop()
 
     with st.spinner("[2/3] RUNNING AI VIRAL MOMENT DETECTION ACROSS FULL VOD..."):
